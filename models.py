@@ -15,18 +15,32 @@ def to_onehot(a, nclasses):
     b[a] = 1
     return b
 
+class Policy:
+    def __init__(self, model, actions, T):
+        self.model = model
+        self.actions = actions
+        self.T = T
+        self.h = model.initial_hidden_state()
+        
+    def predict(self, obs):
+        action, h_next = self.model.sample_action(obs, actions, self.h, self.T)
+        self.h = h_next
+        return action
+
 class SarsaRNN(nn.Module):
     def __init__(self, input_size=3, output_size=3, hidden_size=3,
-                 nactions=3, gamma=0.9):
+                 actions=None, gamma=0.9, T=0.1):
       super(SarsaRNN, self).__init__()
 
       self.gamma = gamma
       self.input_size = input_size
       self.output_size = output_size
       self.hidden_size = hidden_size
-      self.nactions = nactions
+      self.actions = actions
       self.rnn = nn.GRUCell(input_size=input_size, hidden_size=hidden_size)
       self.output = nn.Linear(in_features=hidden_size, out_features=output_size, bias=True)
+      self.T = T # temperature (for converting Q to policy)
+      self.h = self.initial_hidden_state()
       self.reset()
 
     def forward(self, x, h_prev):
@@ -49,19 +63,27 @@ class SarsaRNN(nn.Module):
         return self.forward(torch.concat([o, a])[None,:], h_prev)
     
     def action_to_tensor(self, a):
-        return torch.Tensor(to_onehot(a, self.nactions))
+        return torch.Tensor(to_onehot(a, len(self.actions)))
     
-    def sample_action(self, obs, actions, h_prev, T):
+    def sample_action(self, obs, h_prev, T):
         """
         sample action using temperature T
 
         n.b. assumes all inputs are numpy arrays (excluding hprev)
         """
-        qs = [self.Q(obs, a, h_prev) for a in actions]
+        qs = [self.Q(obs, a, h_prev) for a in self.actions]
         prefs = np.array([q[0].detach().numpy() for q,h in qs])
         pol = np.exp(prefs/T)/np.exp(prefs/T).sum()
-        action = np.random.choice(actions, p=pol[:,0])
-        return action
+        action = np.random.choice(self.actions, p=pol[:,0])
+        h_next = qs[action][1].detach()
+        return action, h_next
+    
+    def predict(self, obs, state=None, T=None):
+        state = self.h if state is None else state
+        T = self.T if T is None else T
+        action, state_next = self.sample_action(obs, state, T)
+        self.h = state_next
+        return action, []
     
     def initial_hidden_state(self):
         return torch.zeros((1,self.hidden_size))
