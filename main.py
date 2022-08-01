@@ -33,7 +33,7 @@ print('Groundtruth shape is (N_time,) =', gt.shape)
 #%% run using a random agent
 
 env = PerceptualDecisionMaking(dt=20)
-fig = ngym.utils.plot_env(env, num_trials=10)
+fig = ngym.utils.plot_env(env, num_trials=2)
 
 #%% initialize agent
 
@@ -44,69 +44,86 @@ model = SarsaRNN(input_size=input_size, output_size=1,
 
 #%% train
 
-"""
-to dos:
-    - consider training with the normal task, just to see if I'm doing things right
-        since currently, model might suck for reasons to do with the custom task
-        and not my training methods/code
-    - what's the right way to do a gradient step with the RNN? (see: DQRNN)
-    - save best model in terms of loss, and reset to that one at the end
-    - am I handling the ends of trials right? (is done ever True?)
-""" 
-
 lr = 0.003
 loss_fn = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, amsgrad=False)
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
 model.train()
 
-nepochs = 100
-ntrials_per_episode = 20
+nepochs = 500
+batch_size = 15
+ntrials_per_episode = 1
 
 losses = []
+aborts = []
+corrects = []
+lens = []
 for i in range(nepochs):
-    # new episode
-    h = model.initial_hidden_state()
+    # new epoch
     train_loss = 0
     n = 0
     ob = env.reset()
     reward = 0
-    for j in range(ntrials_per_episode):
-        # simulate trial
-        continue_trial = True
-        while continue_trial:
-            action, _ = model.predict(ob, h)
-            ob_next, reward, done, info = env.step(action)
-            continue_trial = info['new_trial'] == False
-            
-            # train using SARSA
-            Q_cur, h_next = model.Q(ob, action, h)
-            if not done:
-                action_next, _ = model.predict(ob_next, h)
-                Q_next, _ = model.Q(ob_next, action_next, h_next)
-                Q_target = reward + model.gamma*Q_next.detach()
-            else:
-                Q_target = reward
-            loss = loss_fn(Q_cur, Q_target)
-            
-            # log and prepare for next iteration
-            train_loss += loss
-            n += 1
-            ob = ob_next
-            h = h_next
+    
+    caborts = []
+    ccorrects = []
+    clens = []
+    for _ in range(batch_size):
+        # reset hidden state every episode
+        h = model.initial_hidden_state()
+        for _ in range(ntrials_per_episode):
+
+            # simulate trial
+            continue_trial = True
+            rs = []
+            nstart = n
+            while continue_trial:
+                action, _ = model.predict(ob, h)
+                ob_next, reward, done, info = env.step(action)
+                continue_trial = info['new_trial'] == False
+                
+                # train using SARSA
+                Q_cur, h_next = model.Q(ob, action, h)
+                if not done:
+                    action_next, _ = model.predict(ob_next, h)
+                    Q_next, _ = model.Q(ob_next, action_next, h_next)
+                    Q_target = reward + model.gamma*Q_next.detach()
+                else:
+                    assert False, "done happened?"
+                    Q_target = reward
+                loss = loss_fn(Q_cur, Q_target)
+                
+                # log and prepare for next iteration
+                train_loss += loss
+                n += 1
+                ob = ob_next
+                h = h_next
+                rs.append(reward)
+            rs = np.array(rs)
+            caborts.append((rs < 0).any())
+            ccorrects.append((rs > 0).any())
+            clens.append(n-nstart)
 
     # gradient step
+    train_loss = train_loss/n
     optimizer.zero_grad()
     train_loss.backward()
     optimizer.step()
-            
-    train_loss = train_loss.item()/n
-    losses.append(train_loss)
-    print("Epoch {}: loss={:0.3f}".format(i, train_loss))
+
+    losses.append(train_loss.item())
+    aborts.append(np.mean(caborts))
+    corrects.append(np.mean(ccorrects))
+    lens.append(np.mean(clens))
+    print("Epoch {}: loss={:0.3f}, aborts={:0.2f}, corrects={:0.2f}, lens={:0.2f}".format(i, train_loss, np.mean(caborts), np.mean(ccorrects), np.mean(clens)))
 
 plot_loss(losses)
+
+#%%
+
+scores = np.vstack([aborts, corrects, lens]).T
+plot_loss(scores)
 
 #%% run using trained agent
 
 # model.T = 0.1
-fig = ngym.utils.plot_env(env, num_trials=200, model=model)
+fig = ngym.utils.plot_env(env, num_trials=100, model=model)
