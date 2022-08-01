@@ -166,13 +166,14 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
     }
 
     def __init__(self, dt=100, rewards=None, timing=None, cohs=None,
-                 sigma=1.0, dim_ring=2, abort=False):
+                 sigma=1.0, dim_ring=2, abort=False, early_response=False):
         super().__init__(dt=dt)
         if cohs is None:
             self.cohs = np.array([0, 6.4, 12.8, 25.6, 51.2])
         else:
             self.cohs = cohs
         self.sigma = sigma / np.sqrt(self.dt)  # Input noise
+        self.early_response = early_response
 
         # Rewards
         self.rewards = {'abort': -0.1, 'correct': +1., 'fail': 0.}
@@ -234,12 +235,15 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
         # Observations
         self.add_ob(1, period=['fixation', 'delay'], where='fixation')
         # self.add_ob(1, period=['fixation', 'stimulus', 'delay'], where='fixation')
-        stim = np.cos(self.theta - stim_theta) * (coh/200) + 0.5
+        stim = np.cos(self.theta - stim_theta) * (coh/200)# + 0.5
         self.add_ob(stim, 'stimulus', where='stimulus')
         self.add_randn(0, self.sigma, 'stimulus', where='stimulus')
 
         # Ground truth
-        self.set_groundtruth(ground_truth, period='decision', where='choice')
+        if not self.early_response:
+            self.set_groundtruth(ground_truth, period='decision', where='choice')
+        else:
+            self.set_groundtruth(ground_truth, period=['stimulus', 'delay', 'decision'], where='choice')
 
         return trial
 
@@ -263,7 +267,7 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
             if action != 0:  # action = 0 means fixating
                 new_trial = self.abort
                 reward += self.rewards['abort']
-        elif self.in_period('decision'):
+        elif self.in_period('decision') or (self.early_response and (self.in_period('delay') or self.in_period('stimulus'))):
             if action != 0:
                 new_trial = True
                 if action == gt:

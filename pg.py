@@ -42,7 +42,7 @@ def run_episode(env, model, trial=None):
         episode.append((obs, float(action), reward, h.detach()))
         obs = Variable(torch.from_numpy(next_obs).float())
         h = h_next
-    return episode, h
+    return episode
 
 def discount_reward(rs, gamma):
     rs = np.array(rs)
@@ -87,6 +87,31 @@ def train_batch(model, optimizer, batch):
             loss += (-m.log_prob(action) * r)
         loss.backward()
     optimizer.step()
+    
+def summarize_episide(env, model, episode):
+    probs, _ = model(torch.Tensor(env.reset()), model.initial_hidden_state())
+    p0 = probs.detach().numpy()
+        
+    return {
+        'duration': len(episode),
+        'correct': np.any([r > 0 for s,a,r,h in episode]),
+        'initial_probs': p0,
+        'mean_reward': np.mean([r for s,a,r,h in episode]),
+        }
+
+def summarize_batch(stats, batch_size):
+    cstats = stats[-1:-(batch_size+1):-1]
+    
+    durs = np.mean([item['duration'] for item in cstats])
+    pcor = 100*np.mean([item['correct'] for item in cstats])
+    p0 = np.mean([item['initial_probs'][0][0] for item in cstats])
+    rew = np.mean([item['mean_reward'] for item in cstats])
+    
+    m1 = 'avg episode length: {}'.format(durs)
+    m2 = '% cor: {:0.1f}'.format(pcor)
+    m3 = 'init prob: {:0.2f}'.format(p0)
+    m4 = 'r: {:0.2f}'.format(rew)
+    return (m1, m2, m3, m4)
 
 #%% model
 
@@ -122,7 +147,7 @@ class PolicyGradientRNN(nn.Module):
     
     def initial_hidden_state(self):
         h = torch.zeros((1,self.hidden_size))
-        # h[0][0] = 10
+        h[0][0] = 1
         return h
 
     def checkpoint_weights(self):
@@ -144,7 +169,8 @@ class PolicyGradientRNN(nn.Module):
 #%% initialize
 
 # env = gym.make('CartPole-v0')
-env = PerceptualDecisionMaking(abort=False, rewards={'abort': -0.1}, timing={'fixation': 200})
+env = PerceptualDecisionMaking(abort=False, rewards={'abort': -0.1},
+                               timing={'fixation': 200}, early_response=True)
 # env = SingleContextDecisionMaking(abort=True, rewards={'abort': -1})
 # env = pass_reward.PassReward(env)
 
@@ -156,46 +182,37 @@ model = PolicyGradientRNN(input_size=env.observation_space.shape[0],
 
 #%% train
 
-n_episodes = 2000
+n_epochs = 1000
 batch_size = 5
 lr = 0.002
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-batch = []
-# stats = []
-for e in range(n_episodes):
-    episode, h = run_episode(env, model)
-    
-    probs, _ = model(torch.Tensor(env.reset()), model.initial_hidden_state())
-    
-    stats.append({
-        'duration': len(episode),
-        'correct': np.any([r > 0 for s,a,r,h in episode]),
-        'initial_probs': probs.detach().numpy(),#[0],
-        'mean_reward': np.mean([r for s,a,r,h in episode]),
-        })
-    batch.append(episode)
+stats = []
+for e in range(n_epochs):
+    batch = []
+    for _ in range(batch_size):
+        episode = run_episode(env, model)
+        batch.append(episode)
+        stats.append(summarize_episide(env, model, episode))
 
-    if e > 0 and (e % batch_size) == 0:
-        train_batch(model, optimizer, batch)
-        batch = []
-        cstats = stats[-1:-(batch_size+1):-1]
-        durs = np.mean([item['duration'] for item in cstats])
-        pcor = 100*np.mean([item['correct'] for item in cstats])
-        ps = np.mean([item['initial_probs'][0][0] for item in cstats])
-        rew = np.mean([item['mean_reward'] for item in cstats])
-        print('Batch {}, avg. episode length: {}, % cor: {:0.1f}, init prob: {:0.2f}, r: {:0.2f}'.format(int(e / batch_size), durs, pcor, ps, rew))
+    train_batch(model, optimizer, batch)
+
+    if e % 10 == 0:
+        msgs = summarize_batch(stats, batch_size)
+        print('Epoch {}: '.format(e) + ', '.join(msgs[1:]))
 
 #%% plot
 
 moving_average = lambda x,w: np.convolve(x, np.ones(w), 'valid') / w
 
 xs = np.array([item['correct'] for item in stats])
-plt.plot(moving_average(xs, 20))
-# plt.ylim([0, 1])
+plt.plot(moving_average(xs, 20), 'k-')
+plt.ylim([0, 1])
+plt.xlabel('# episodes')
+plt.ylabel('% correct')
 
-plt.plot([x['initial_probs'][0] for x in stats])
-plt.plot(moving_average([x['mean_reward'] for x in stats], 20))
+# plt.plot([x['initial_probs'][0] for x in stats])
+# plt.plot(moving_average([x['mean_reward'] for x in stats], 20))
 
 #%% probe model
 
@@ -208,7 +225,7 @@ for i in range(nreps):
         trial = {'coh': coh}
         env.new_trial(**trial)
         env.t = env.t_ind = 0
-        episode, _ = run_episode(env, model)
+        episode = run_episode(env, model)
         trial.update({
             'duration': len(episode),
             'correct': np.any([r > 0 for s,a,r,h in episode]),
@@ -222,4 +239,40 @@ for c in cohs:
     pts.append((c, pcor))
 pts = np.array(pts)
 plt.plot(pts[:,0], pts[:,1]), plt.ylim([0, 1])
+
+#%% plot activations during trial
+
+T = 20 # stimulus period length
+taction = 1
+
+for caction in [1,0]:
+    cohs = env.cohs if caction == 0 else env.cohs[::-1]
+    # cohs = cohs[cohs > 0]
+    for coh in cohs:
+        clr = np.array([1,0,0])*round(np.log(coh) if coh > 0 else 1)/np.log(60)
+        if caction != taction:
+            clr = np.roll(clr, -1)
+            
+        Probs = []; Hs = []
+        for t in range(T+2):
+            if t == 0:
+                obs = torch.Tensor(env.reset())
+                h = model.initial_hidden_state()
+            elif t < T:
+                stim = np.cos(env.theta - env.theta[caction]) * (coh/200)
+                obs = 0*obs; obs[1] = stim[0]; obs[2] = stim[1]
+            else:
+                obs = 0*obs
+                
+            probs, h = model(obs, h)
+            Probs.append(probs.detach().numpy())
+            Hs.append(h.detach().numpy())
+        Probs = np.vstack(Probs)
+        Hs = np.vstack(Hs)
+        
+        plt.plot(Probs[:,taction+1], '.-', color=clr, label=coh if caction==0 else -coh)
+plt.xlabel('time in trial')
+plt.ylabel('P(correct)')
+plt.ylim([0, 1])
+plt.legend()
 
