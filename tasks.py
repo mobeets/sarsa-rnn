@@ -9,6 +9,140 @@ import numpy as np
 import neurogym as ngym
 from neurogym import spaces
 
+class SingleContextDecisionMaking(ngym.TrialEnv):
+    """Context-dependent decision-making task.
+
+    The agent simultaneously receives stimulus inputs from two modalities (
+    for example, a colored random dot motion pattern with color and motion
+    modalities). The agent needs to make a perceptual decision based on only
+    one of the two modalities, while ignoring the other. The agent reports
+    its decision during the decision period, with an optional delay period
+    in between the stimulus period and the decision period. The relevant
+    modality is not explicitly signaled.
+
+    Args:
+        context: int, 0 or 1 for the two context (rules). If 0, need to
+            focus on modality 0 (the first one)
+    """
+    metadata = {
+        'paper_link': 'https://www.nature.com/articles/nature12742',
+        'paper_name': '''Context-dependent computation by recurrent
+         dynamics in prefrontal cortex''',
+        'tags': ['perceptual', 'context dependent', 'two-alternative',
+                 'supervised']
+    }
+
+    def __init__(self, dt=100, context=0, rewards=None, timing=None,
+                 sigma=1.0, dim_ring=2, abort=False):
+        super().__init__(dt=dt)
+
+        # trial conditions
+        self.choices = [1, 2]  # left, right choice
+        self.cohs = [5, 15, 50]
+        self.sigma = sigma / np.sqrt(self.dt)  # Input noise
+        self.context = context
+
+        # Rewards
+        self.rewards = {'abort': -0.1, 'correct': +1.}
+        if rewards:
+            self.rewards.update(rewards)
+
+        self.timing = {
+            'fixation': 300,
+            # 'target': 350,
+            'stimulus': 750,
+            'delay': 0, # ngym.random.TruncExp(600, 300, 3000, rng=self.rng),
+            'decision': 100}
+        if timing:
+            self.timing.update(timing)
+
+        self.abort = abort
+
+        # set action and observation space
+        self.theta = np.linspace(0, 2 * np.pi, dim_ring + 1)[:-1]
+        self.choices = np.arange(dim_ring)
+
+        name = {
+            'fixation': 0,
+            'stimulus_mod1': range(1, dim_ring + 1),
+            'stimulus_mod2': range(dim_ring + 1, 2 * dim_ring + 1)}
+        shape = (1 + 2 * dim_ring,)
+        self.observation_space = spaces.Box(
+            -np.inf, np.inf, shape=shape, dtype=np.float32, name=name)
+
+        name = {'fixation': 0, 'choice': range(1, dim_ring+1)}
+        self.action_space = spaces.Discrete(1+dim_ring, name=name)
+
+    def all_trials(self):
+        trials = []
+        for choice1 in self.choices:
+            for choice2 in self.choices:
+                for coh0 in self.cohs:
+                    for coh1 in self.cohs:
+                        trial = {'ground_truth': choice1,
+                                 'other_choice': choice2,
+                                 'context': self.context,
+                                 'coh_0': coh0,
+                                 'coh_1': coh1}
+                        trials.append(trial)
+        return trials
+    
+    def _new_trial(self, **kwargs):
+        # Trial
+        trial = {
+            'ground_truth': self.rng.choice(self.choices),
+            'other_choice': self.rng.choice(self.choices),
+            'context': self.context,
+            'coh_0': self.rng.choice(self.cohs),
+            'coh_1': self.rng.choice(self.cohs),
+        }
+        trial.update(kwargs)
+
+        choice_0, choice_1 =\
+            trial['ground_truth'], trial['other_choice']
+        if trial['context'] == 1:
+            choice_1, choice_0 = choice_0, choice_1
+        coh_0, coh_1 = trial['coh_0'], trial['coh_1']
+
+        stim_theta_0 = self.theta[choice_0]
+        stim_theta_1 = self.theta[choice_1]
+        ground_truth = trial['ground_truth']
+
+        # Periods
+        periods = ['fixation', 'stimulus', 'delay', 'decision']
+        self.add_period(periods)
+
+        self.add_ob(1, where='fixation')
+        stim = np.cos(self.theta - stim_theta_0) * (coh_0 / 200) + 0.5
+        self.add_ob(stim, 'stimulus', where='stimulus_mod1')
+        stim = np.cos(self.theta - stim_theta_1) * (coh_1 / 200) + 0.5
+        self.add_ob(stim, 'stimulus', where='stimulus_mod2')
+        self.add_randn(0, self.sigma, 'stimulus')
+        self.set_ob(0, 'decision')
+
+        self.set_groundtruth(ground_truth, period='decision', where='choice')
+
+        return trial
+
+    def _step(self, action):
+        ob = self.ob_now
+        gt = self.gt_now
+
+        new_trial = False
+        reward = 0
+        if self.in_period('fixation'):
+            if action != 0:
+                new_trial = self.abort
+                reward = self.rewards['abort']
+        elif self.in_period('decision'):
+            if action != 0:  # broke fixation
+                new_trial = True
+                if action == gt:
+                    reward = self.rewards['correct']
+                    self.performance = 1
+
+        return ob, reward, False, {'new_trial': new_trial, 'gt': gt}
+
 class PerceptualDecisionMaking(ngym.TrialEnv):
     """Two-alternative forced choice task in which the subject has to
     integrate two stimuli to decide which one is higher on average.
@@ -32,7 +166,7 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
     }
 
     def __init__(self, dt=100, rewards=None, timing=None, cohs=None,
-                 sigma=1.0, dim_ring=2):
+                 sigma=1.0, dim_ring=2, abort=False):
         super().__init__(dt=dt)
         if cohs is None:
             self.cohs = np.array([0, 6.4, 12.8, 25.6, 51.2])
@@ -53,7 +187,7 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
         if timing:
             self.timing.update(timing)
 
-        self.abort = False
+        self.abort = abort
 
         self.theta = np.linspace(0, 2*np.pi, dim_ring+1)[:-1]
         self.choices = np.arange(dim_ring)
@@ -63,6 +197,14 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
             -np.inf, np.inf, shape=(1+dim_ring,), dtype=np.float32, name=name)
         name = {'fixation': 0, 'choice': range(1, dim_ring+1)}
         self.action_space = spaces.Discrete(1+dim_ring, name=name)
+        
+    def all_trials(self):
+        trials = []
+        for coh in self.cohs:
+            for choice in self.choices:
+                trial = {'ground_truth': choice, 'coh': coh}
+                trials.append(trial)
+        return trials
 
     def _new_trial(self, **kwargs):
         """
@@ -90,7 +232,8 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
         self.add_period(['fixation', 'stimulus', 'delay', 'decision'])
 
         # Observations
-        self.add_ob(1, period=['fixation', 'stimulus', 'delay'], where='fixation')
+        self.add_ob(1, period=['fixation', 'delay'], where='fixation')
+        # self.add_ob(1, period=['fixation', 'stimulus', 'delay'], where='fixation')
         stim = np.cos(self.theta - stim_theta) * (coh/200) + 0.5
         self.add_ob(stim, 'stimulus', where='stimulus')
         self.add_randn(0, self.sigma, 'stimulus', where='stimulus')
@@ -115,12 +258,11 @@ class PerceptualDecisionMaking(ngym.TrialEnv):
         reward = 0
         gt = self.gt_now
         # observations
-        # if self.in_period('fixation'):
-        if not self.in_period('decision'):
+        # if not self.in_period('decision'):
+        if self.in_period('fixation'):
             if action != 0:  # action = 0 means fixating
                 new_trial = self.abort
                 reward += self.rewards['abort']
-                # new_trial = True
         elif self.in_period('decision'):
             if action != 0:
                 new_trial = True
