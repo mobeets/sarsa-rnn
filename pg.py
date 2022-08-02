@@ -22,18 +22,21 @@ from tasks import PerceptualDecisionMaking, SingleContextDecisionMaking, Percept
 
 #%% collect data
 
-def run_episode(env, model, ntrials=1, trial=None):
+def run_episode(env, model, ntrials=1, trials=None):
     model.eval()
     obs = env.reset()
-    if trial is not None:
-        env.new_trial(**trial)
-        env.t = env.t_ind = 0
-        obs, _, _, _ = env.step(0)
     obs = Variable(torch.from_numpy(obs).float())
     h = model.initial_hidden_state()
     episode = []
     
     for trial_index in range(ntrials):
+        if trials is not None and trials[trial_index] is not None:
+            trial = trials[trial_index]
+            env.new_trial(**trial)
+            env.t = env.t_ind = 0
+            obs, _, _, _ = env.step(0)
+            obs = Variable(torch.from_numpy(obs).float())
+        
         done = False
         while not done:
             probs, h_next = model(obs, h)
@@ -104,6 +107,7 @@ def summarize_trial(episode, index):
     rews = np.array([x['reward'] for x in trial])
     iti = max([i for i,x in enumerate(trial) if x['obs'].numpy()[0]==1])
     return { # todo: only works if there is one trial per episode
+        'trial_index': index,
         'iti': iti,
         'RT': len(trial)-iti,
         'duration': len(trial),
@@ -237,37 +241,49 @@ plt.xlabel('# trials (every 10)')
 cohs = np.arange(5, 51, 5)
 probe_stats = []
 nreps = 25
+ntrials_per_episode = 5
+plotPerIndex = False
+
 for i in range(nreps):
     for coh in cohs:
         trial = {'coh': coh}
-        episode = run_episode(env, model, trial=trial)
-        trial.update(summarize_episode(episode)[0])
-        probe_stats.append(trial)
+        episode = run_episode(env, model, ntrials=ntrials_per_episode, trials=[trial]*ntrials_per_episode)
+        for x in summarize_episode(episode, ntrials_per_episode):
+            x.update(trial)
+            if not plotPerIndex:
+                x['trial_index'] = 0
+            probe_stats.append(x)
 
+inds = np.unique([x['trial_index'] for x in probe_stats])
 pts = []
-for c in cohs:
-    ctrs = [x for x in probe_stats if x['coh']==c]
-    pcor = np.mean([x['correct'] for x in ctrs])
-    pcor_se = np.std([x['correct'] for x in ctrs])/np.sqrt(len(ctrs))
-    
-    dur = np.mean([x['RT'] for x in ctrs])
-    dur_se = np.std([x['RT'] for x in ctrs])/np.sqrt(len(ctrs))
-    
-    pts.append((c, pcor, pcor_se, dur, dur_se))
+for i in inds:
+    for c in cohs:
+        ctrs = [x for x in probe_stats if x['coh']==c and x['trial_index']==i]
+        pcor = np.mean([x['correct'] for x in ctrs])
+        pcor_se = np.std([x['correct'] for x in ctrs])/np.sqrt(len(ctrs))
+        
+        dur = np.mean([x['RT'] for x in ctrs])
+        dur_se = np.std([x['RT'] for x in ctrs])/np.sqrt(len(ctrs))
+        
+        pts.append((i, c, pcor, pcor_se, dur, dur_se))
 pts = np.array(pts)
 
 plt.figure(figsize=(6,3))
 plt.subplot(1,2,1)
-h = plt.plot(pts[:,0], pts[:,1])
-plt.plot(pts[:,0], pts[:,1]-pts[:,2], color=h[0].get_color(), alpha=0.5)
-plt.plot(pts[:,0], pts[:,1]+pts[:,2], color=h[0].get_color(), alpha=0.5)
+for i in inds:
+    ix = pts[:,0] == i
+    h = plt.plot(pts[ix,1], pts[ix,2])
+    plt.plot(pts[ix,1], pts[ix,2]-pts[ix,3], color=h[0].get_color(), alpha=0.5)
+    plt.plot(pts[ix,1], pts[ix,2]+pts[ix,3], color=h[0].get_color(), alpha=0.5)
 plt.ylim([-0.05, 1.05])
 plt.xlabel('coherence')
 plt.ylabel('P(correct)')
 plt.subplot(1,2,2)
-h = plt.plot(pts[:,0], pts[:,3])
-plt.plot(pts[:,0], pts[:,3]-pts[:,4], color=h[0].get_color(), alpha=0.5)
-plt.plot(pts[:,0], pts[:,3]+pts[:,4], color=h[0].get_color(), alpha=0.5)
+for i in inds:
+    ix = pts[:,0] == i
+    h = plt.plot(pts[ix,1], pts[ix,4])
+    plt.plot(pts[ix,1], pts[ix,4]-pts[ix,5], color=h[0].get_color(), alpha=0.5)
+    plt.plot(pts[ix,1], pts[ix,4]+pts[ix,5], color=h[0].get_color(), alpha=0.5)
 plt.xlabel('coherence')
 plt.ylabel('RT')
 plt.tight_layout()
@@ -281,7 +297,7 @@ env.early_response = False # make the network wait to respond
 
 trials = []
 for trial in env.all_trials([0.0, 3.2, 6.4, 12.8, 25.6, 51.2]):
-    episode = run_episode(env, model, trial=trial)
+    episode = run_episode(env, model, trials=[trial])
     iti = max([i for i,x in enumerate(episode) if x['obs'].numpy()[0] == 1])
     episode = episode[iti:] # skip iti
     trial.update({'episode': episode})
