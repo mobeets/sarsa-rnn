@@ -13,34 +13,41 @@ import torch.nn as nn
 import neurogym as ngym
 from neurogym.wrappers import pass_reward
 
-from tasks import PerceptualDecisionMaking
-from models import SarsaRNN
+from tasks import PerceptualDecisionMaking, SwitchingBandit, PassAction
+import models
 from plotting import plot_loss
 
 #%% initialize environment
 
-env = PerceptualDecisionMaking()
+# env = PerceptualDecisionMaking()
+env = SwitchingBandit()
 env = pass_reward.PassReward(env)
+env = PassAction(env)
 _ = env.reset()
 
 trial = env.new_trial()
-ob, gt = env.ob, env.gt
+# ob, gt = env.ob, env.gt
+ob = env.ob
 
 print('Trial information', trial)
 print('Observation shape is (N_time, N_unit) =', ob.shape)
-print('Groundtruth shape is (N_time,) =', gt.shape)
+# print('Groundtruth shape is (N_time,) =', gt.shape)
+print(ob)
 
 #%% run using a random agent
 
-env = PerceptualDecisionMaking(dt=20)
-fig = ngym.utils.plot_env(env, num_trials=2)
+env = SwitchingBandit()
+env = pass_reward.PassReward(env)
+env = PassAction(env)
+# env = PerceptualDecisionMaking(dt=20)
+fig = ngym.utils.plot_env(env, num_trials=10)
 
 #%% initialize agent
 
 input_size = env.observation_space.shape[0] + env.action_space.n
-model = SarsaRNN(input_size=input_size, output_size=1,
+model = models.SarsaRNN(input_size=input_size, output_size=1,
                  hidden_size=3, actions=np.arange(env.action_space.n),
-                 gamma=0.9, T=0.1)
+                 gamma=0.9, T=0.1, epsilon=0.1)
 
 #%% train
 
@@ -52,7 +59,7 @@ model.train()
 
 nepochs = 500
 batch_size = 15
-ntrials_per_episode = 1
+ntrials_per_episode = 10
 
 losses = []
 aborts = []
@@ -82,7 +89,7 @@ for i in range(nepochs):
                 ob_next, reward, done, info = env.step(action)
                 continue_trial = info['new_trial'] == False
                 
-                # train using SARSA
+                # train using SARSA (episodic semi-gradient one-step SARSA)
                 Q_cur, h_next = model.Q(ob, action, h)
                 if not done:
                     action_next, _ = model.predict(ob_next, h)
@@ -120,10 +127,9 @@ plot_loss(losses)
 
 #%%
 
-scores = np.vstack([aborts, corrects, lens]).T
-plot_loss(scores)
+plot_loss(corrects)
 
 #%% run using trained agent
 
 # model.T = 0.1
-fig = ngym.utils.plot_env(env, num_trials=100, model=model)
+fig = ngym.utils.plot_env(env, num_trials=10, model=model)

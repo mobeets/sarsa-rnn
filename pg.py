@@ -181,11 +181,14 @@ class PolicyGradientRNN(nn.Module):
 #%% initialize
 
 # env = gym.make('CartPole-v0')
-env = PerceptualDecisionMakingSingleCue(abort=False,
-                                        rewards={'abort': -0.1, 'fail': -5},
-                                        early_response=True,
-                                        cohs=[12.8],
-                                        sigma=2.0)
+env = PerceptualDecisionMakingSingleCue(
+                        abort=False,
+                        timing={'fixation': 0, 'delay': 0, 'decision': 0},
+                        rewards={'abort': -0.1, 'fail': -5},
+                        early_response_allowed=True,
+                        fixation_during_stim=True,
+                        cohs=[12.8],
+                        sigma=2.0)
 
 # env = SingleContextDecisionMaking(abort=True, rewards={'abort': -1})
 # env = pass_reward.PassReward(env)
@@ -240,9 +243,9 @@ plt.xlabel('# trials (every 10)')
 
 cohs = np.arange(5, 51, 5)
 probe_stats = []
-nreps = 25
 ntrials_per_episode = 5
 plotPerIndex = False
+nreps = 25 if plotPerIndex else int(25/ntrials_per_episode)
 
 for i in range(nreps):
     for coh in cohs:

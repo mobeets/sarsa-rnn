@@ -50,7 +50,7 @@ def to_onehot(a, nclasses):
 
 class SarsaRNN(nn.Module):
     def __init__(self, input_size=3, output_size=3, hidden_size=3,
-                 actions=None, gamma=0.9, T=0.1):
+                 actions=None, gamma=0.9, T=0.1, epsilon=None):
       super(SarsaRNN, self).__init__()
 
       self.gamma = gamma
@@ -61,6 +61,7 @@ class SarsaRNN(nn.Module):
       self.rnn = nn.GRUCell(input_size=input_size, hidden_size=hidden_size)
       self.output = nn.Linear(in_features=hidden_size, out_features=output_size, bias=True)
       self.T = T # temperature (for converting Q to policy)
+      self.epsilon = epsilon # if not None, overrides self.T
       self.h = self.initial_hidden_state()
       self.reset()
 
@@ -93,13 +94,15 @@ class SarsaRNN(nn.Module):
 
         n.b. assumes all inputs are numpy arrays (excluding hprev)
         """
-        if epsilon is not None and np.random.rand() < epsilon:
-            # take random action
-            return np.random.choice(self.actions)
+        epsilon = self.epsilon if epsilon is None else epsilon
         qs = [self.Q(obs, a, h_prev) for a in self.actions]
         prefs = np.array([q[0].detach().numpy() for q,h in qs])
         if epsilon is not None:
-            action = self.actions[np.argmax(prefs)]
+            if np.random.rand() < epsilon:
+                # take random action
+                action = np.random.choice(self.actions)
+            else:
+                action = self.actions[np.argmax(prefs)]
         else:
             pol = np.exp(prefs/T)/np.exp(prefs/T).sum()
             action = np.random.choice(self.actions, p=pol[:,0])
@@ -107,6 +110,7 @@ class SarsaRNN(nn.Module):
         return action, h_next
     
     def predict(self, obs, state=None, T=None, epsilon=None):
+        epsilon = self.epsilon if epsilon is None else epsilon
         state = self.h if state is None else state
         T = self.T if T is None else T
         action, state_next = self.sample_action(obs, state, T, epsilon=epsilon)
